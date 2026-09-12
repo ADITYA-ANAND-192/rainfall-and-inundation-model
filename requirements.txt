@@ -1,0 +1,14 @@
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.24.0
+pandas>=2.0.0
+xarray>=2023.0.0
+netCDF4>=1.6.0
+h5netcdf>=1.1.0
+h5py>=3.8.0
+scikit-learn>=1.2.0
+scipy>=1.10.0
+Pillow>=9.0.0
+imagecodecs>=2023.0.0
+tifffile>=2023.0.0
+matplotlib>=3.7.0

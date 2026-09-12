@@ -1,0 +1,32 @@
+# Python & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+.ipynb_checkpoints/
+
+# Environments
+env/
+venv/
+.venv/
+
+# Large Raw Geospatial Datasets (>100MB / Thousands of satellite tiles)
+01_IMD_Rainfall/
+03_DEM_Dataset/
+04_GPM_IMERG/
+05_S1GFloods/
+06_ERA5_Dataset/
+
+# Processed Heavy Binary Tensors & NetCDFs (Regenerated via src/data_prep/)
+processed_data/era5_extracted/
+processed_data/rainfall_tensors/*.npz
+processed_data/rainfall_tensors/*.csv
+
+# Keep Processed Lightweight Manifests & Features
+!processed_data/s1gfloods_splits/
+!processed_data/district_features/
+
+# OS Specific
+Thumbs.db
+Desktop.ini
+.DS_Store

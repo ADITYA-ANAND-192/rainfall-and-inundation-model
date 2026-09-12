@@ -1,0 +1,8 @@
+{
+  "total_pairs": 5360,
+  "train_count": 3752,
+  "val_count": 804,
+  "test_count": 804,
+  "mean_flood_pct": 32.32884561567164,
+  "max_flood_pct": 99.9985
+}
