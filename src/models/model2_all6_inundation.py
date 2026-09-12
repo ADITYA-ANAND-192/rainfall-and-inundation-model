@@ -11,6 +11,7 @@ Features Ingested:
 Outputs:
 1. Flood Inundation Percentage (%)
 2. Inundation Threat Classification (Low, Moderate, High, Severe)
+3. Real-World Disaster Assessment Metrics (POD/Recall, FAR, CSI, Precision, F1)
 """
 
 import os
@@ -20,8 +21,9 @@ import torch.nn.functional as F
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor, HistGradientBoostingClassifier
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, accuracy_score
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, accuracy_score, precision_recall_fscore_support, confusion_matrix
 from sklearn.preprocessing import StandardScaler
+from sklearn.utils.class_weight import compute_class_weight
 
 ALL6_FEATURE_COLS = [
     # 1. ERA5
@@ -39,9 +41,6 @@ ALL6_FEATURE_COLS = [
 ]
 
 class All6InundationNet(nn.Module):
-    """
-    PyTorch Deep Multi-Modal Inundation Prediction Network ingesting all 6 datasets.
-    """
     def __init__(self, in_features: int = len(ALL6_FEATURE_COLS), hidden_dim: int = 128):
         super().__init__()
         self.fc1 = nn.Linear(in_features, hidden_dim)
@@ -58,7 +57,7 @@ class All6InundationNet(nn.Module):
         # Head 1: Continuous Inundation Percentage (0 - 100%)
         self.head_pct = nn.Sequential(
             nn.Linear(64, 1),
-            nn.Sigmoid() # Scale by 100.0
+            nn.Sigmoid()
         )
 
         # Head 2: Categorical Inundation Risk Level (Low, Moderate, High, Severe)
@@ -91,12 +90,12 @@ def train_and_eval_model2_all6(
     y_train_inund = df_train["target_inundation_pct"].values
     y_test_inund = df_test["target_inundation_pct"].values
 
-    # Inundation Risk Category: 0=Low (<5%), 1=Moderate (5-15%), 2=High (15-30%), 3=Severe (>30%)
+    # Categorical Risk: 0=Low (<3%), 1=Moderate (3-8%), 2=High (8-15%), 3=Severe (>15%)
     def to_risk_class(arr):
         cats = np.zeros(len(arr), dtype=int)
-        cats[arr >= 5.0] = 1
-        cats[arr >= 15.0] = 2
-        cats[arr >= 30.0] = 3
+        cats[arr >= 3.0] = 1
+        cats[arr >= 8.0] = 2
+        cats[arr >= 15.0] = 3
         return cats
 
     y_train_cls = to_risk_class(y_train_inund)
@@ -106,7 +105,7 @@ def train_and_eval_model2_all6(
     X_train_norm = scaler.fit_transform(X_train)
     X_test_norm = scaler.transform(X_test)
 
-    # 1. Train Gradient Boosted Inundation Regressor
+    # 1. Gradient Boosted Regressor
     print("1. Training Gradient Boosted Inundation Regressor on all 6 modalities...")
     gb_reg = HistGradientBoostingRegressor(max_iter=150, learning_rate=0.08, random_state=42)
     gb_reg.fit(X_train, y_train_inund)
@@ -116,22 +115,51 @@ def train_and_eval_model2_all6(
     mae = mean_absolute_error(y_test_inund, preds_inund)
     r2 = r2_score(y_test_inund, preds_inund)
 
-    print(f"  --> Model 2 Inundation Regression Test Results:")
-    print(f"      * RMSE: {rmse:.3f}% flooded area")
-    print(f"      * MAE:  {mae:.3f}% flooded area")
-    print(f"      * R^2:  {r2:.3f} ({r2*100:.1f}% variance explained)")
+    # 2. Gradient Boosted Risk Classifier with Class Balancing
+    print("2. Training Inundation Risk Classifier with balanced sample weighting...")
+    classes = np.unique(y_train_cls)
+    weights = compute_class_weight(class_weight="balanced", classes=classes, y=y_train_cls)
+    weight_dict = {c: w for c, w in zip(classes, weights)}
+    sample_weights = np.array([weight_dict[c] for c in y_train_cls])
 
-    # 2. Train Inundation Risk Classifier
-    print("2. Training Inundation Threat Classifier (Low / Moderate / High / Severe)...")
     gb_cls = HistGradientBoostingClassifier(max_iter=100, learning_rate=0.1, random_state=42)
-    gb_cls.fit(X_train, y_train_cls)
+    gb_cls.fit(X_train, y_train_cls, sample_weight=sample_weights)
 
     preds_cls = gb_cls.predict(X_test)
     acc = accuracy_score(y_test_cls, preds_cls)
-    print(f"  --> Model 2 Inundation Risk Classification Accuracy: {acc*100:.2f}%")
+    prec, rec, f1, _ = precision_recall_fscore_support(y_test_cls, preds_cls, average="macro", zero_division=0)
+
+    # Inundation Warning Binary Metrics (Inundation >= 3% / Flood Risk Event)
+    y_test_flood = (y_test_cls >= 1).astype(int)
+    preds_flood = (preds_cls >= 1).astype(int)
+
+    tn, fp, fn, tp = confusion_matrix(y_test_flood, preds_flood).ravel()
+    pod = tp / (tp + fn + 1e-6) # Probability of Detection (Recall)
+    far = fp / (tp + fp + 1e-6) # False Alarm Ratio
+    csi = tp / (tp + fp + fn + 1e-6) # Critical Success Index (Threat Score)
+    prec_flood = tp / (tp + fp + 1e-6)
+    f1_flood = 2 * (prec_flood * pod) / (prec_flood + pod + 1e-6)
+
+    print("\n" + "=" * 70)
+    print("REAL-WORLD FLOOD INUNDATION TEST RESULTS - MODEL 2 (ALL 6 DATASETS):")
+    print("=" * 70)
+    print(f"  * Overall Multi-Class Accuracy: {acc*100:.2f}%")
+    print(f"  * Macro-Average Precision:     {prec*100:.2f}%")
+    print(f"  * Macro-Average Recall:        {rec*100:.2f}%")
+    print(f"  * Macro-Average F1-Score:      {f1*100:.2f}%")
+    print(f"\n  --- Real-World Flood Event Detection (Inundation >= 3%) ---")
+    print(f"  * Probability of Detection (Recall / Hit Rate): {pod*100:.2f}% (Caught {tp} of {tp+fn} flood inundation events!)")
+    print(f"  * Flood Warning Precision:                      {prec_flood*100:.2f}%")
+    print(f"  * False Alarm Ratio (FAR):                      {far*100:.2f}%")
+    print(f"  * Critical Success Index (CSI / Threat Score):  {csi*100:.2f}%")
+    print(f"  * Flood Hazard F1-Score:                        {f1_flood*100:.2f}%")
+    print(f"\n  --- Continuous Inundation Extent Metrics ---")
+    print(f"  * Test RMSE: {rmse:.3f}% flooded area")
+    print(f"  * Test MAE:  {mae:.3f}% flooded area")
+    print(f"  * R^2 Score: {r2:.3f} ({r2*100:.1f}% variance explained)")
 
     # 3. Train PyTorch Deep Neural Network on All 6 Datasets
-    print("3. Training PyTorch All6InundationNet (Deep Multimodal Inundation Network)...")
+    print("\n3. Training PyTorch All6InundationNet (Deep Multimodal Inundation Network)...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     net = All6InundationNet(in_features=len(ALL6_FEATURE_COLS), hidden_dim=128).to(device)
     optimizer = torch.optim.AdamW(net.parameters(), lr=1e-3, weight_decay=1e-4)
@@ -156,21 +184,22 @@ def train_and_eval_model2_all6(
             loss.backward()
             optimizer.step()
             tot_loss += loss.item() * len(bx)
-        print(f"  Epoch [{epoch}/3] Loss: {tot_loss / len(train_ds):.4f}")
+        print(f"  Epoch [{epoch}/3] Deep Loss: {tot_loss / len(train_ds):.4f}")
 
-    # Save Checkpoint
     os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
-    torch.save({"model_state": net.state_dict(), "scaler": scaler, "feature_cols": ALL6_FEATURE_COLS}, ckpt_path)
+    torch.save({
+        "model_state": net.state_dict(),
+        "scaler": scaler,
+        "feature_cols": ALL6_FEATURE_COLS,
+        "gb_reg": gb_reg,
+        "gb_cls": gb_cls
+    }, ckpt_path)
     print(f"Saved trained Model 2 checkpoint to: {ckpt_path}")
 
     return {
-        "rmse": rmse,
-        "mae": mae,
-        "r2": r2,
-        "risk_accuracy": acc,
-        "gb_model": gb_reg,
-        "net_model": net,
-        "feature_cols": ALL6_FEATURE_COLS
+        "accuracy": acc, "precision": prec, "recall": rec, "f1": f1,
+        "pod": pod, "far": far, "csi": csi, "f1_flood": f1_flood,
+        "rmse": rmse, "mae": mae, "r2": r2
     }
 
 if __name__ == "__main__":

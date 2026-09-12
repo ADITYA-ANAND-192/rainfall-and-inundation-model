@@ -11,6 +11,7 @@ Features Ingested:
 Outputs:
 1. Continuous Rainfall Volume (mm/day)
 2. Heavy Rainfall Warning Level (Normal, Heavy, Very Heavy, Extremely Heavy)
+3. Real-World Meteorological Metrics (POD/Recall, FAR, CSI, Precision, F1)
 """
 
 import os
@@ -20,8 +21,9 @@ import torch.nn.functional as F
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor, HistGradientBoostingClassifier
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, accuracy_score, classification_report
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, accuracy_score, precision_recall_fscore_support, confusion_matrix
 from sklearn.preprocessing import StandardScaler
+from sklearn.utils.class_weight import compute_class_weight
 
 ALL6_FEATURE_COLS = [
     # 1. ERA5
@@ -39,9 +41,6 @@ ALL6_FEATURE_COLS = [
 ]
 
 class All6RainfallNet(nn.Module):
-    """
-    PyTorch Deep Residual Tabular Network ingesting features from all 6 datasets.
-    """
     def __init__(self, in_features: int = len(ALL6_FEATURE_COLS), hidden_dim: int = 128):
         super().__init__()
         self.fc1 = nn.Linear(in_features, hidden_dim)
@@ -55,7 +54,7 @@ class All6RainfallNet(nn.Module):
         self.fc3 = nn.Linear(hidden_dim, 64)
         self.bn3 = nn.BatchNorm1d(64)
 
-        # Regression Head: Rainfall amount in mm (log1p)
+        # Regression Head: log1p rainfall
         self.head_reg = nn.Linear(64, 1)
 
         # Classification Head: 4 Heavy Rainfall Warning Classes
@@ -63,11 +62,11 @@ class All6RainfallNet(nn.Module):
 
     def forward(self, x):
         h1 = self.dropout(self.relu(self.bn1(self.fc1(x))))
-        h2 = self.dropout(self.relu(self.bn2(self.fc2(h1)))) + h1 # Residual skip
+        h2 = self.dropout(self.relu(self.bn2(self.fc2(h1)))) + h1
         h3 = self.relu(self.bn3(self.fc3(h2)))
 
-        out_reg = F.relu(self.head_reg(h3)) # Non-negative log1p rainfall
-        out_cls = self.head_cls(h3)        # Logits for 4 warning levels
+        out_reg = F.relu(self.head_reg(h3))
+        out_cls = self.head_cls(h3)
         return out_reg, out_cls
 
 def train_and_eval_model1_all6(
@@ -95,7 +94,7 @@ def train_and_eval_model1_all6(
     X_train_norm = scaler.fit_transform(X_train)
     X_test_norm = scaler.transform(X_test)
 
-    # 1. Train Gradient Boosted Regressor
+    # 1. Gradient Boosted Regressor
     print("1. Training High-Capacity Gradient Boosted Regressor on all 6 modalities...")
     gb_reg = HistGradientBoostingRegressor(max_iter=150, learning_rate=0.08, random_state=42)
     gb_reg.fit(X_train, y_train_reg)
@@ -105,22 +104,53 @@ def train_and_eval_model1_all6(
     mae = mean_absolute_error(y_test_reg, preds_reg)
     r2 = r2_score(y_test_reg, preds_reg)
 
-    print(f"  --> Model 1 Regression Test Results:")
-    print(f"      * RMSE: {rmse:.3f} mm/day")
-    print(f"      * MAE:  {mae:.3f} mm/day")
-    print(f"      * R^2:  {r2:.3f}")
+    # 2. Gradient Boosted Warning Classifier with Class Balancing
+    print("2. Training Heavy Rainfall Warning Classifier with class weighting...")
+    # Calculate sample weights for class imbalance
+    classes = np.unique(y_train_cls)
+    weights = compute_class_weight(class_weight="balanced", classes=classes, y=y_train_cls)
+    weight_dict = {c: w for c, w in zip(classes, weights)}
+    sample_weights = np.array([weight_dict[c] for c in y_train_cls])
 
-    # 2. Train Gradient Boosted Early Warning Classifier
-    print("2. Training Heavy Rainfall Warning Classifier (Normal / Heavy / Very Heavy / Extremely Heavy)...")
     gb_cls = HistGradientBoostingClassifier(max_iter=100, learning_rate=0.1, random_state=42)
-    gb_cls.fit(X_train, y_train_cls)
+    gb_cls.fit(X_train, y_train_cls, sample_weight=sample_weights)
 
     preds_cls = gb_cls.predict(X_test)
     acc = accuracy_score(y_test_cls, preds_cls)
-    print(f"  --> Model 1 Warning Classification Accuracy: {acc*100:.2f}%")
+    prec, rec, f1, _ = precision_recall_fscore_support(y_test_cls, preds_cls, average="macro", zero_division=0)
+
+    # Meteorological Heavy Rain Binary Metrics (Class >= 1: Heavy Rain >= 35.5mm)
+    y_test_heavy = (y_test_cls >= 1).astype(int)
+    preds_heavy = (preds_cls >= 1).astype(int)
+
+    # Confusion matrix for Heavy Rain detection
+    tn, fp, fn, tp = confusion_matrix(y_test_heavy, preds_heavy).ravel()
+    pod = tp / (tp + fn + 1e-6) # Probability of Detection (Recall)
+    far = fp / (tp + fp + 1e-6) # False Alarm Ratio
+    csi = tp / (tp + fp + fn + 1e-6) # Critical Success Index (Threat Score)
+    prec_heavy = tp / (tp + fp + 1e-6) # Precision
+    f1_heavy = 2 * (prec_heavy * pod) / (prec_heavy + pod + 1e-6)
+
+    print("\n" + "=" * 70)
+    print("REAL-WORLD METEOROLOGICAL TEST RESULTS - MODEL 1 (ALL 6 DATASETS):")
+    print("=" * 70)
+    print(f"  * Overall Multi-Class Accuracy: {acc*100:.2f}%")
+    print(f"  * Macro-Average Precision:     {prec*100:.2f}%")
+    print(f"  * Macro-Average Recall:        {rec*100:.2f}%")
+    print(f"  * Macro-Average F1-Score:      {f1*100:.2f}%")
+    print(f"\n  --- Real-World Severe Weather Detection (Rain >= 35.5 mm/day) ---")
+    print(f"  * Probability of Detection (Recall / Hit Rate): {pod*100:.2f}% (Successfully caught {tp} of {tp+fn} heavy events!)")
+    print(f"  * Severe Rain Warning Precision:                {prec_heavy*100:.2f}%")
+    print(f"  * False Alarm Ratio (FAR):                      {far*100:.2f}%")
+    print(f"  * Critical Success Index (CSI / Threat Score):  {csi*100:.2f}%")
+    print(f"  * Severe Weather F1-Score:                      {f1_heavy*100:.2f}%")
+    print(f"\n  --- Continuous Rainfall Estimation Metrics ---")
+    print(f"  * Test RMSE: {rmse:.3f} mm/day")
+    print(f"  * Test MAE:  {mae:.3f} mm/day")
+    print(f"  * R^2 Score: {r2:.3f}")
 
     # 3. Train PyTorch Deep Neural Network on All 6 Datasets
-    print("3. Training PyTorch All6RainfallNet (Deep Multimodal Fusion Network)...")
+    print("\n3. Training PyTorch All6RainfallNet (Deep Multimodal Fusion Network)...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     net = All6RainfallNet(in_features=len(ALL6_FEATURE_COLS), hidden_dim=128).to(device)
     optimizer = torch.optim.AdamW(net.parameters(), lr=1e-3, weight_decay=1e-4)
@@ -145,21 +175,22 @@ def train_and_eval_model1_all6(
             loss.backward()
             optimizer.step()
             tot_loss += loss.item() * len(bx)
-        print(f"  Epoch [{epoch}/3] Loss: {tot_loss / len(train_ds):.4f}")
+        print(f"  Epoch [{epoch}/3] Deep Loss: {tot_loss / len(train_ds):.4f}")
 
-    # Save Checkpoint
     os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
-    torch.save({"model_state": net.state_dict(), "scaler": scaler, "feature_cols": ALL6_FEATURE_COLS}, ckpt_path)
+    torch.save({
+        "model_state": net.state_dict(),
+        "scaler": scaler,
+        "feature_cols": ALL6_FEATURE_COLS,
+        "gb_reg": gb_reg,
+        "gb_cls": gb_cls
+    }, ckpt_path)
     print(f"Saved trained Model 1 checkpoint to: {ckpt_path}")
 
     return {
-        "rmse": rmse,
-        "mae": mae,
-        "r2": r2,
-        "warning_accuracy": acc,
-        "gb_model": gb_reg,
-        "net_model": net,
-        "feature_cols": ALL6_FEATURE_COLS
+        "accuracy": acc, "precision": prec, "recall": rec, "f1": f1,
+        "pod": pod, "far": far, "csi": csi, "f1_heavy": f1_heavy,
+        "rmse": rmse, "mae": mae, "r2": r2
     }
 
 if __name__ == "__main__":
