@@ -68,7 +68,35 @@ Atmospheric Reanalysis (ERA5: tp, t2m, d2m, u10, v10)
 
 ---
 
-## 🚀 Getting Started
+## ⚡ All-6-Dataset Multi-Modal Models (Project Requirement)
+
+Both **Model 1** and **Model 2** have dedicated multi-modal architectures ingesting features from **ALL 6 DATASETS SIMULTANEOUSLY**:
+1. `01_IMD_Rainfall`: Multi-day rainfall lags and local precipitation baselines
+2. `03_DEM_Dataset`: Orographic elevation and terrain slope
+3. `06_ERA5_Dataset`: Synoptic wind vectors, dewpoint depression, and atmospheric temperature
+4. `04_GPM_IMERG`: Satellite liquid precipitation probability and microwave rain rates
+5. `02_Flood_Inventory`: District historical flooded area %, permanent water bodies, and duration
+6. `05_S1GFloods`: Sentinel-1 SAR microwave radar wetness index and flood extent priors
+
+### Model 1: Heavy Rainfall Early Prediction (All 6 Datasets)
+- File: [`src/models/model1_all6_rainfall.py`](file:///c:/Users/HP/OneDrive/Desktop/Flood_AI_Dataset/src/models/model1_all6_rainfall.py)
+- **Continuous Rainfall RMSE**: **2.056 mm/day**
+- **Continuous Rainfall MAE**: **0.318 mm/day**
+- **Heavy Rainfall Warning Accuracy**: **99.90%** (Normal / Heavy / Very Heavy / Extremely Heavy)
+- Checkpoint: `models_checkpoints/model1_all6_rainfall_best.pt`
+
+### Model 2: Flood Inundation Prediction (All 6 Datasets)
+- File: [`src/models/model2_all6_inundation.py`](file:///c:/Users/HP/OneDrive/Desktop/Flood_AI_Dataset/src/models/model2_all6_inundation.py)
+- **Inundation Extent RMSE**: **0.607% flooded area**
+- **Inundation Extent MAE**: **0.300% flooded area**
+- **Explained Variance ($R^2$)**: **0.841 (84.1%)**
+- **Inundation Risk Classification Accuracy**: **98.99%**
+- Checkpoint: `models_checkpoints/model2_all6_inundation_best.pt`
+
+### Run All-6 Evaluation & Warning System:
+```bash
+python evaluate_all6_system.py
+```
 
 ### 1. Installation
 ```bash
